@@ -11,6 +11,7 @@
 #include "deauther.h"
 #include "target.h"
 #include "wifiMng.h"
+#include "server_api.h"
 
 static const char *TAG = "WEBSERVER";
 static httpd_handle_t server = NULL;
@@ -149,7 +150,6 @@ static esp_err_t submit_password_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// دالة توجيه الجذر
 static esp_err_t root_handler(httpd_req_t *req) {
     if (strcmp(req->uri, "/") != 0 && strcmp(req->uri, "/scan") != 0 && 
         strcmp(req->uri, "/start_eviltwin") != 0 && strcmp(req->uri, "/start_deauth") != 0 && 
@@ -205,7 +205,6 @@ static esp_err_t start_eviltwin_handler(httpd_req_t *req) {
         target_info_t target;
         memset(&target, 0, sizeof(target));
         
-        // تم إصلاح هذا السطر بإضافة (char*)
         strncpy((char*)target.ssid, ssid, sizeof(target.ssid) - 1);
         
         target.channel = atoi(channel_str);
@@ -276,4 +275,15 @@ void http_server_stop(void) {
         httpd_stop(server);
         server = NULL;
     }
+}
+
+// ==========================================
+// 5. Stubs for WebSocket functions (to satisfy Linker)
+// ==========================================
+httpd_handle_t get_web_server_handle(void) {
+    return server;
+}
+
+esp_err_t ws_send_broadcast_to_queue(void *req) {
+    return ESP_OK;
 }
