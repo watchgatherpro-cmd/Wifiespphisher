@@ -284,6 +284,6 @@ httpd_handle_t get_web_server_handle(void) {
     return server;
 }
 
-esp_err_t ws_send_broadcast_to_queue(void *req) {
+esp_err_t ws_send_broadcast_to_queue(ws_frame_req_t *req) {
     return ESP_OK;
 }
