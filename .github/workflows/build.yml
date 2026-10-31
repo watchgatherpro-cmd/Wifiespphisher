@@ -30,7 +30,6 @@ jobs:
       - name: Create Merged Binary
         run: |
           mkdir -p output
-          # دمج الملفات: bootloader @ 0x0، partition table @ 0x8000، التطبيق @ 0x10000
           esptool.py --chip esp32s3 merge_bin \
             -o output/merged.bin \
             --flash_mode dio \
