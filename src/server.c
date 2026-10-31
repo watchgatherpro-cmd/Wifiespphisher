@@ -4,456 +4,80 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_log.h>
-#include <lwip/sockets.h>
-#include <cJSON.h>
-#include "evil_twin.h"
-#include "server.h"
-#include "server_api.h"
-#include "TaskManager.h"
-
+#include <esp_wifi.h>
+#include <esp_netif.h>
+#include <esp_http_server.h>
 
 static const char *TAG = "WEBSERVER";
 static httpd_handle_t server = NULL;
-static uint8_t attack_scheme = 0xff;
-static QueueHandle_t ws_frame_queue = NULL;
-static TaskHandle_t ws_frame_process_task_handle = NULL;
 
+// صفحة الويب المدمجة (HTML)
+const char *html_page = 
+"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+"<title>ESP32 Pentest Tool</title>"
+"<style>body{font-family:sans-serif;background:#222;color:#fff;text-align:center;padding:20px;}"
+"h1{color:#00ffcc;} .btn{background:#ff4444;color:white;padding:15px 32px;text-align:center;"
+"text-decoration:none;display:inline-block;font-size:16px;margin:4px 2px;cursor:pointer;border-radius:8px;}"
+".btn:hover{background:#cc0000;} input{padding:10px;border-radius:5px;border:none;margin:10px;}"
+".status{color:#00ff00; margin-top:20px;}</style></head>"
+"<body><h1>ESP32 Evil Twin</h1>"
+"<p>اختر شبكة الهدف وابدأ الهجوم:</p>"
+"<form action='/start' method='get'>"
+"<input type='text' name='ssid' placeholder='اسم الشبكة' required>"
+"<input type='submit' class='btn' value='بدء الهجوم (Start Attack)'>"
+"</form>"
+"<div class='status'>النظام جاهز...</div>"
+"</body></html>";
 
-static void ws_send_work(void *arg)
-{
-    ws_frame_req_t *r = (ws_frame_req_t *)arg;
-    httpd_ws_frame_t out = {
-        .final = true,
-        .fragmented = false,
-        .type = HTTPD_WS_TYPE_TEXT,
-        .payload = (uint8_t *)r->payload,
-        .len = r->len ? r->len : strlen(r->payload)
-    };
-	/* BROADCAST */
-	if (r->fd == -1) {
-        size_t fds = 10;
-        int client_fds[10];
-        if (httpd_get_client_list(r->hd, &fds, client_fds) == ESP_OK) {
-            for (int i = 0; i < fds; i++) {
-				if (httpd_ws_get_fd_info(r->hd, client_fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
-                    esp_err_t ret = httpd_ws_send_frame_async(r->hd, client_fds[i], &out);
-                    if (ret != ESP_OK) {
-                        httpd_sess_trigger_close(r->hd, client_fds[i]);
-                    }
-                }
-            }
-        }
-    } 
-	/* UNICAST */
-    else {
-		esp_err_t ret = httpd_ws_send_frame_async(r->hd, r->fd, &out);
-        if (ret != ESP_OK) {
-             httpd_sess_trigger_close(r->hd, r->fd);
-        }
-    }
-
-    if (r->need_free && r->payload) {
-        cJSON_free(r->payload);
-    }
-    free(r);
+// دالة عرض الصفحة الرئيسية
+static esp_err_t index_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html_page, strlen(html_page));
+    return ESP_OK;
 }
 
-
-static void ws_frame_process_task(void *pvParameter)
-{
-	(void)pvParameter;
-	ws_frame_req_t ws_frame;
-	while (1) 
-	{
-		if (xQueueReceive(ws_frame_queue, &ws_frame, portMAX_DELAY) == pdTRUE) 
-		{
-			switch (ws_frame.frame_type)
-			{
-			case WS_RX_FRAME:
-			{
-				/* Process received frame */
-				http_api_parse(&ws_frame);
-				if (ws_frame.payload) free(ws_frame.payload);
-				break;
-			}
-			
-			case WS_TX_FRAME:
-			{
-				/* Process transmit frame */
-				ws_frame_req_t *heap_req = malloc(sizeof(ws_frame_req_t));
-				if (heap_req) {
-                    memcpy(heap_req, &ws_frame, sizeof(ws_frame_req_t));
-					if (httpd_queue_work(ws_frame.hd, ws_send_work, heap_req) != ESP_OK) {
-                        ESP_LOGE(TAG, "Failed to queue WS work, freeing memory");
-                        if(heap_req->payload && heap_req->need_free) {
-                            cJSON_free(heap_req->payload);
-                        }
-						free(heap_req);
-                    }
-                } else {
-					ESP_LOGE(TAG, "Failed to alloc async req");
-                    if(ws_frame.payload && ws_frame.need_free) cJSON_free(ws_frame.payload);
-                }
-				break;
-			}
-			
-			default:
-				break;
-			}
-			
-		}
-	}
-}
-
-
-static esp_err_t captive_portal_redirect(httpd_req_t *req)
-{
-	ESP_LOGD(TAG, "Captive portal captured url: %s", req->uri);
-	const char *portal_url = "http://192.168.4.1/";
-	httpd_resp_set_status(req, "302 Found");
-	//httpd_resp_set_hdr(req, "Host", host);
-	httpd_resp_set_hdr(req, "Location", portal_url);
-	httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-	httpd_resp_set_hdr(req, "Pragma", "no-cache");
-	httpd_resp_set_hdr(req, "Connection", "close");
-	httpd_resp_send(req, NULL, 0);
-	return ESP_OK;
-}
-
-
-static esp_err_t cors_prevention_handler(httpd_req_t *req)
-{
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "POST, OPTIONS");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type");
-    return httpd_resp_send(req, NULL, 0);
-}
-
-
-static esp_err_t ws_handler(httpd_req_t *req)
-{
-    if (req->method == HTTP_GET) {
-        ESP_LOGD(TAG, "WS handshake done, new client fd=%d", httpd_req_to_sockfd(req));
-        return ESP_OK;
-    }
-
-    httpd_ws_frame_t frame = {0};
-	frame.type = HTTPD_WS_TYPE_TEXT;
-
-	esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0);
-    if (ret != ESP_OK) return ret;
-
-	if (frame.type == HTTPD_WS_TYPE_PING) {
-        ESP_LOGD(TAG, "PING (fd=%d)", httpd_req_to_sockfd(req));
-        httpd_ws_frame_t pong = {.type = HTTPD_WS_TYPE_PONG, .payload = NULL, .len = 0};
-        return httpd_ws_send_frame(req, &pong);
-    }
-
-    if (frame.type == HTTPD_WS_TYPE_CLOSE) {
-        ESP_LOGD(TAG, "CLOSE (fd=%d)", httpd_req_to_sockfd(req));
-        return ESP_OK;
-    }
-
-	if (frame.len > 0) {
-
-		if (frame.len >= 4096) {
-            ESP_LOGW(TAG, "WS Frame too large (%u bytes)", (unsigned)frame.len);
-            return ESP_FAIL;
-        }
-
-        uint8_t *buf = calloc(1, frame.len + 1);
-        if (!buf) {
-            ESP_LOGE(TAG, "No mem for WS frame");
-            return ESP_ERR_NO_MEM;
-        }
-        frame.payload = buf;
-        ret = httpd_ws_recv_frame(req, &frame, frame.len);
-        if (ret != ESP_OK) {
-            free(buf);
-            return ret;
-        }
-        buf[frame.len] = '\0';
-
-        ws_frame_req_t ws_req;
-        ws_req.hd = req->handle;
-        ws_req.fd = httpd_req_to_sockfd(req);
-        ws_req.frame_type = WS_RX_FRAME;
-        ws_req.payload = (char*)buf;
-        ws_req.len = frame.len;
-        ws_req.need_free = true;
-
-        if (xQueueSend(ws_frame_queue, &ws_req, 100) != pdTRUE) {
-            free(buf);
-            return ESP_FAIL;
-        }
+// دالة بدء الهجوم
+static esp_err_t start_handler(httpd_req_t *req) {
+    char ssid[32];
+    if (httpd_req_get_url_query_str(req, ssid, sizeof(ssid)) == ESP_OK) {
+        ESP_LOGI(TAG, "Starting attack on: %s", ssid);
+        // هنا نضع كود بدء الهجوم (Evil Twin)
+        httpd_resp_send(req, "Attack Started!", HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_send(req, "No SSID provided", HTTPD_RESP_USE_STRLEN);
     }
     return ESP_OK;
 }
 
-
-static esp_err_t redirect_handler(httpd_req_t *req) 
-{
-	char filepath[128] = "/spiffs";
-	char buf[1024];
-    size_t n;
-	const char *uri = req->uri;
-
-	/* Redirect to captive portal */
-	// Apple / iOS / macOS
-	if(strcmp(uri, "/hotspot-detect.html") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-	else if(strcmp(uri, "/library/test/success.html") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-
-	// Android / ChromeOS
-	else if(strcmp(uri, "/generate_204") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-	else if(strcmp(uri, "/gen_204") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-
-	// Windows 10 / 11 (MSFT Connect Test)
-	else if(strcmp(uri, "/connecttest.txt") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-	else if(strcmp(uri, "/redirect") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-
-	// Windows 7 / 8 / vecchie versioni (NCSI)
-	else if(strcmp(uri, "/ncsi.txt") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-
-	// Varianti Firefox, Ubuntu, ecc.
-	else if(strcmp(uri, "/check_network_status.txt") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-	else if(strcmp(uri, "/canonical.html") == 0 ) {
-		captive_portal_redirect(req);
-		return ESP_OK;
-	}
-	else if(strncmp(uri, "/success.txt", 12) == 0 ) {
-        captive_portal_redirect(req);
-        return ESP_OK;
-    }
-	
-    if (strcmp(uri, "/") == 0) { 
-		switch(attack_scheme)
-		{
-			case FIRMWARE_UPGRADE:
-				uri = "/fwupgrade/index.html";
-				break;
-			
-			case WEB_NET_MANAGER:
-				uri = "/netmng/index.html";
-				break;
-
-			case PLUGIN_UPDATE:
-				uri = "/plugin.html";
-				break;
-
-			case OAUTH_LOGIN:
-				uri = "/oauth/index.html";
-				break;
-
-			default:
-				uri = "/admin.html";
-				break;
-		}
-	}
-    strlcat(filepath, uri, sizeof(filepath));
-
-    FILE *f = fopen(filepath, "r");
-    if (!f) 
-    { 
-		const char *method_str = "OTHER";
-        switch(req->method) {
-            case HTTP_GET:  method_str = "GET"; break;
-            case HTTP_POST: method_str = "POST"; break;
-            case HTTP_HEAD: method_str = "HEAD"; break;
-			case HTTP_OPTIONS: method_str = "OPTION"; break;
-			case HTTP_PUT: method_str = "PUT"; break;
-            default: break;
-        }
-		ESP_LOGW(TAG, "%s %s - 404", method_str, req->uri);
-		if (req->method == HTTP_POST && req->content_len > 0) {
-            char buf[101]; 
-            size_t recv_size = (req->content_len < 100) ? req->content_len : 100;
-            int ret = httpd_req_recv(req, buf, recv_size);
-            if (ret > 0) {
-                buf[ret] = '\0';
-                ESP_LOGW(TAG, "POST DATA (Preview): %s", buf);
-            } else if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                ESP_LOGW(TAG, "POST DATA: Timeout reading body");
-            }
-        }
-
-		return captive_portal_redirect(req);
-        //httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
-        //return ESP_OK; 
-    }
-
-    httpd_resp_set_type(req, mime_from_path(filepath));
-	
-    
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) 
-    {
-        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) 
-        { 
-            fclose(f); 
-            return ESP_FAIL; 
-        }
-    }
-    fclose(f);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
-}
-
-
-esp_err_t ws_send_command_to_queue(ws_frame_req_t *_req)
-{
-	if (ws_frame_queue == NULL) {
-		ESP_LOGE(TAG, "Websocket frame queue is not initialized!");
-		return ESP_FAIL;
-	}
-
-	/* Enforce frame type */
-	_req->frame_type = WS_TX_FRAME;
-
-	if (xQueueSend(ws_frame_queue, _req, 100) != pdTRUE) {
-		ESP_LOGE(TAG, "Failed to send command to queue!");
-		return ESP_FAIL;
-	}
-
-	return ESP_OK;
-}
-
-
-esp_err_t ws_send_broadcast_to_queue(ws_frame_req_t *_req)
-{
-    if (ws_frame_queue == NULL) {
-		ESP_LOGE(TAG, "Websocket frame queue is not initialized!");
-		return ESP_FAIL;
-	}
-
-	if (uxQueueSpacesAvailable(ws_frame_queue) == 0) {
-        return ESP_FAIL;
-    }
-
-    _req->frame_type = WS_TX_FRAME;
-    
-    if (xQueueSend(ws_frame_queue, _req, 0) != pdTRUE) {
-        return ESP_FAIL; 
-    }
-
-    return ESP_OK;
-}
-
-
-void http_server_start(void)
-{
-	if( server != NULL )
-	{
-		ESP_LOGE(TAG, "Web server already started.");
-		return;
-	}
-
+void http_server_start(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-	config.ctrl_port = 81;
-	config.server_port = 80;
-	config.uri_match_fn = httpd_uri_match_wildcard;
-	config.max_open_sockets = 10;
-	config.max_resp_headers = 16;
-	config.recv_wait_timeout = 10;
-	config.send_wait_timeout = 10;
-	config.lru_purge_enable = true;
-	config.max_uri_handlers = 15;
+    config.server_port = 80;
 
-	esp_err_t ret = httpd_start(&server, &config);
-	if (ret != ESP_OK) {
-		ESP_LOGE(TAG, "Failed to start web server: %s", esp_err_to_name(ret));
-		return;
-	}
-
-	ws_frame_queue = xQueueCreate(WS_FRAME_QUEUE_LENGTH, sizeof(ws_frame_req_t));
-	if (ws_frame_queue == NULL) {
-		ESP_LOGE(TAG, "Failed to create websocket frame queue!");
-		return;
-	}
-	task_manager_create_task(ws_frame_process_task, "ws_frame_process_task", 4096, NULL, 5, &ws_frame_process_task_handle);
-
-	/* Handler for CORS preflight requests */
-	httpd_uri_t cors_preflight_uri = {
-		.uri = "/*",
-		.method = HTTP_OPTIONS,
-		.handler = cors_prevention_handler,
-		.user_ctx = NULL
-	};
-	ESP_ERROR_CHECK(httpd_register_uri_handler(server, &cors_preflight_uri));
-
-	httpd_uri_t ws_uri = {
-		.uri = "/ws",
-		.method = HTTP_GET,
-		.handler = ws_handler,
-		.user_ctx = NULL,
-		.is_websocket = true,
-		.handle_ws_control_frames = true
-	};
-	ESP_ERROR_CHECK(httpd_register_uri_handler(server, &ws_uri));
-
-	httpd_uri_t any = {
-		.uri = "/*", 
-		.method = HTTP_GET, 
-		.handler = redirect_handler, 
-		.user_ctx = NULL
-	};
-	ESP_ERROR_CHECK(httpd_register_uri_handler(server, &any));
-
-	httpd_uri_t any_head = {
-        .uri = "/*", 
-        .method = HTTP_HEAD,
-        .handler = redirect_handler, 
+    httpd_uri_t index_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = index_handler,
         .user_ctx = NULL
     };
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &any_head));
-}
+    httpd_uri_t start_uri = {
+        .uri = "/start",
+        .method = HTTP_GET,
+        .handler = start_handler,
+        .user_ctx = NULL
+    };
 
-
-void http_server_stop(void)
-{
-	if (ws_frame_process_task_handle != NULL) {
-        task_manager_delete_task_by_handle(ws_frame_process_task_handle);
-        ws_frame_process_task_handle = NULL;
-    }
-
-	if( ws_frame_queue != NULL ) {
-		vQueueDelete(ws_frame_queue);
-		ws_frame_queue = NULL;
-	}
-
-	if( server != NULL ) {
-        if( httpd_stop(server) != ESP_OK ) {
-            ESP_LOGD(TAG, "Failed to stop web server.");
-            return;
-        }
-		server = NULL;
+    if (httpd_start(&server, &config) == ESP_OK) {
+        httpd_register_uri_handler(server, &index_uri);
+        httpd_register_uri_handler(server, &start_uri);
+        ESP_LOGI(TAG, "Web server started on port 80");
+    } else {
+        ESP_LOGE(TAG, "Failed to start web server");
     }
 }
 
-
-httpd_handle_t get_web_server_handle(void) 
-{
-    return server;
+void http_server_stop(void) {
+    if (server) {
+        httpd_stop(server);
+        server = NULL;
+    }
 }
